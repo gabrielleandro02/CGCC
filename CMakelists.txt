@@ -5,6 +5,10 @@ project(CGCCHIB)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+# Direciona os executáveis para fora do OneDrive para evitar que o OneDrive
+# renomeie/corrumpa arquivos .exe durante a sincronização
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "$ENV{USERPROFILE}/CGCCBin")
+
 # Ativa o FetchContent
 include(FetchContent)
 
@@ -57,6 +61,7 @@ set(EXERCISES
     TriangleTex
     SpherePhong
     ObjTex
+    SceneViewer
 )
 
 add_compile_options(-Wno-pragmas)
