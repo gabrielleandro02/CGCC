@@ -1,9 +1,11 @@
 /* SceneViewer - Visualizador interativo de múltiplos modelos 3D
  *
- * Atividade Vivencial - Módulo 2 | Computação Gráfica - Unisinos
+ * Atividade Vivencial - Módulo 4 | Computação Gráfica - Unisinos
  *
  * Funcionalidades:
- *   - Leitura de arquivos .OBJ (geometria: vértices + normais + texcoords parseados)
+ *   - Leitura de arquivos .OBJ (geometria: vértices + normais parseados)
+ *   - Leitura de arquivo .MTL (coeficientes Ka, Kd, Ks, Ns para iluminação de Phong)
+ *   - Iluminação de Phong por fragmento (ambiente + difusa + especular)
  *   - Exibição de múltiplos objetos na cena
  *   - Seleção de objetos com TAB (cicla pela lista)
  *   - Transformações no objeto selecionado:
@@ -43,24 +45,36 @@ using namespace glm;
 const GLuint WIDTH  = 900;
 const GLuint HEIGHT = 700;
 
-const float TRANSLATE_SPEED = 2.0f;   // unidades / segundo
-const float SCALE_SPEED     = 0.8f;   // fator   / segundo
-const float ROTATE_SPEED    = 1.8f;   // radianos / segundo
+const float TRANSLATE_SPEED = 2.0f;
+const float SCALE_SPEED     = 0.8f;
+const float ROTATE_SPEED    = 1.8f;
 const float SCALE_MIN       = 0.05f;
+
+// ---------------------------------------------------------------------------
+// Coeficientes de material lidos do .MTL
+// ---------------------------------------------------------------------------
+struct Material
+{
+    float ka = 0.2f;
+    float kd = 0.7f;
+    float ks = 0.5f;
+    float q  = 32.0f;
+};
 
 // ---------------------------------------------------------------------------
 // Struct que representa um modelo 3D na cena
 // ---------------------------------------------------------------------------
 struct OBJModel
 {
-    GLuint VAO       = 0;
-    int    nVertices = 0;
+    GLuint   VAO       = 0;
+    int      nVertices = 0;
+    Material mat;
 
-    vec3 position = vec3(0.0f);       // translação no mundo
-    vec3 scale    = vec3(1.0f);       // escala nos três eixos
-    vec3 rotation = vec3(0.0f);       // ângulos de Euler em radianos (XYZ)
+    vec3 position = vec3(0.0f);
+    vec3 scale    = vec3(1.0f);
+    vec3 rotation = vec3(0.0f);
 
-    string name;                      // apenas para log
+    string name;
 };
 
 // ---------------------------------------------------------------------------
@@ -75,52 +89,77 @@ vector<OBJModel> objects;
 int              selectedObj = 0;
 TransformMode    mode = TransformMode::ROTATE;
 
-bool rotX = false, rotY = true, rotZ = false;  // eixos de rotação ativos
+bool rotX = false, rotY = true, rotZ = false;
 
 // ---------------------------------------------------------------------------
 // Protótipos
 // ---------------------------------------------------------------------------
-void   key_callback(GLFWwindow* window, int key, int scancode, int action, int mod);
-int    setupShader();
-int    loadSimpleOBJ(const string& filePATH, int& nVertices);
-void   drawObject(GLuint shaderID, const OBJModel& obj, bool selected);
-void   printStatus();
+void     key_callback(GLFWwindow* window, int key, int scancode, int action, int mod);
+int      setupShader();
+int      loadSimpleOBJ(const string& filePATH, int& nVertices, string& mtlFile);
+Material loadMTL(const string& mtlPath);
+void     drawObject(GLuint shaderID, const OBJModel& obj, bool selected);
+void     printStatus();
 
 // ---------------------------------------------------------------------------
 // Vertex Shader
 //   location 0 — position (xyz)
-//   location 1 — color    (rgb)  — mantido para compatibilidade com o VBO;
-//                                   a cor efetiva vem do uniform modelColor
+//   location 1 — normal   (xyz)
 // ---------------------------------------------------------------------------
 const GLchar* vertexShaderSource = R"(
 #version 400
 layout (location = 0) in vec3 position;
-layout (location = 1) in vec3 color;
+layout (location = 1) in vec3 normal;
 
 uniform mat4 model;
 uniform mat4 projection;
-uniform vec3 modelColor;
 
-out vec4 vertexColor;
+out vec3 vNormal;
+out vec3 fragPos;
 
 void main()
 {
     gl_Position = projection * model * vec4(position, 1.0);
-    vertexColor = vec4(modelColor, 1.0);
+    fragPos     = vec3(model * vec4(position, 1.0));
+    vNormal     = mat3(transpose(inverse(model))) * normal;
 }
 )";
 
 // ---------------------------------------------------------------------------
-// Fragment Shader
+// Fragment Shader — Phong (ambiente + difusa + especular)
 // ---------------------------------------------------------------------------
 const GLchar* fragmentShaderSource = R"(
 #version 400
-in  vec4 vertexColor;
+in vec3 vNormal;
+in vec3 fragPos;
+
+uniform vec3  modelColor;
+uniform vec3  lightPos;
+uniform vec3  camPos;
+uniform float ka;
+uniform float kd;
+uniform float ks;
+uniform float q;
+
 out vec4 color;
 
 void main()
 {
-    color = vertexColor;
+    vec3 lightColor = vec3(1.0, 1.0, 1.0);
+
+    vec3 ambient = ka * modelColor;
+
+    vec3  N    = normalize(vNormal);
+    vec3  L    = normalize(lightPos - fragPos);
+    float diff = max(dot(N, L), 0.0);
+    vec3  diffuse = kd * diff * modelColor;
+
+    vec3  R    = normalize(reflect(-L, N));
+    vec3  V    = normalize(camPos - fragPos);
+    float spec = pow(max(dot(R, V), 0.0), q);
+    vec3  specular = ks * spec * lightColor;
+
+    color = vec4(ambient + diffuse + specular, 1.0);
 }
 )";
 
@@ -156,31 +195,43 @@ int main()
     GLuint shaderID = setupShader();
 
     // ---- Carregar modelos ----
-    // Os dois modelos compartilham o mesmo VAO (mesma geometria, transforms diferentes)
     {
-        int nV = 0;
-        int vao = loadSimpleOBJ("../assets/Modelos3D/Suzanne.obj", nV);
+        int    nV = 0;
+        string mtlFileName;
+        int    vao = loadSimpleOBJ("../assets/Modelos3D/Suzanne.obj", nV, mtlFileName);
         if (vao == -1) { glfwTerminate(); return -1; }
+
+        Material mat;
+        if (!mtlFileName.empty())
+            mat = loadMTL("../assets/Modelos3D/" + mtlFileName);
 
         OBJModel s1;
         s1.VAO       = (GLuint)vao;
         s1.nVertices = nV;
+        s1.mat       = mat;
         s1.position  = vec3(-1.6f, 0.0f, -5.0f);
         s1.name      = "Suzanne #1";
         objects.push_back(s1);
 
         OBJModel s2;
-        s2.VAO       = (GLuint)vao;   // compartilha geometria
+        s2.VAO       = (GLuint)vao;
         s2.nVertices = nV;
+        s2.mat       = mat;
         s2.position  = vec3( 1.6f, 0.0f, -5.0f);
         s2.name      = "Suzanne #2";
         objects.push_back(s2);
     }
 
-    // ---- Projeção perspectiva ----
+    // ---- Uniforms fixos ----
     glUseProgram(shaderID);
+
     mat4 projection = perspective(radians(50.0f), (float)WIDTH / HEIGHT, 0.1f, 100.0f);
     glUniformMatrix4fv(glGetUniformLocation(shaderID, "projection"), 1, GL_FALSE, value_ptr(projection));
+
+    vec3 lightPos = vec3(2.0f, 4.0f, 2.0f);
+    vec3 camPos   = vec3(0.0f, 0.0f, 0.0f);
+    glUniform3f(glGetUniformLocation(shaderID, "lightPos"), lightPos.x, lightPos.y, lightPos.z);
+    glUniform3f(glGetUniformLocation(shaderID, "camPos"),   camPos.x,   camPos.y,   camPos.z);
 
     glEnable(GL_DEPTH_TEST);
 
@@ -219,21 +270,18 @@ int main()
         else if (mode == TransformMode::TRANSLATE)
         {
             float s = TRANSLATE_SPEED * dt;
-            // Eixo X
             if (glfwGetKey(window, GLFW_KEY_D)     == GLFW_PRESS ||
                 glfwGetKey(window, GLFW_KEY_RIGHT)  == GLFW_PRESS)
                 sel.position.x += s;
             if (glfwGetKey(window, GLFW_KEY_A)     == GLFW_PRESS ||
                 glfwGetKey(window, GLFW_KEY_LEFT)   == GLFW_PRESS)
                 sel.position.x -= s;
-            // Eixo Y
             if (glfwGetKey(window, GLFW_KEY_W)     == GLFW_PRESS ||
                 glfwGetKey(window, GLFW_KEY_UP)     == GLFW_PRESS)
                 sel.position.y += s;
             if (glfwGetKey(window, GLFW_KEY_S)     == GLFW_PRESS ||
                 glfwGetKey(window, GLFW_KEY_DOWN)   == GLFW_PRESS)
                 sel.position.y -= s;
-            // Eixo Z
             if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
                 sel.position.z -= s;
             if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
@@ -263,7 +311,6 @@ int main()
     }
 
     // ---- Limpeza ----
-    // Coleta VAOs únicos para não deletar o mesmo duas vezes
     GLuint lastVAO = 0;
     for (auto& obj : objects)
     {
@@ -284,14 +331,12 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
 {
     if (action != GLFW_PRESS) return;
 
-    // ---- Fechar ----
     if (key == GLFW_KEY_ESCAPE)
     {
         glfwSetWindowShouldClose(window, GL_TRUE);
         return;
     }
 
-    // ---- Seleção de objeto ----
     if (key == GLFW_KEY_TAB)
     {
         selectedObj = (selectedObj + 1) % (int)objects.size();
@@ -300,7 +345,6 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         return;
     }
 
-    // ---- Troca de modo ----
     if (key == GLFW_KEY_R)
     {
         mode = TransformMode::ROTATE;
@@ -315,14 +359,11 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     }
     if (key == GLFW_KEY_S && mode != TransformMode::TRANSLATE)
     {
-        // S muda para SCALE apenas quando não está em TRANSLATE
-        // (em TRANSLATE, S é usado como tecla de movimento no game loop)
         mode = TransformMode::SCALE;
         printStatus();
         return;
     }
 
-    // ---- Eixos de rotação (apenas no modo ROTATE) ----
     if (mode == TransformMode::ROTATE)
     {
         if (key == GLFW_KEY_X) { rotX = !rotX; printStatus(); }
@@ -378,21 +419,20 @@ int setupShader()
 // ===========================================================================
 // loadSimpleOBJ
 //
-// Layout do VBO: pos(3) + cor_placeholder(3) = 6 floats por vértice
+// Layout do VBO: pos(3) + normal(3) = 6 floats por vértice
 //   location 0 — posição (xyz) @ offset 0
-//   location 1 — cor     (rgb) @ offset 3·sizeof(GLfloat)
+//   location 1 — normal  (xyz) @ offset 3·sizeof(GLfloat)
 //
-// A cor efetiva é controlada pelo uniform modelColor no shader.
 // Retorna o identificador do VAO, ou -1 em caso de erro.
 // ===========================================================================
-int loadSimpleOBJ(const string& filePATH, int& nVertices)
+int loadSimpleOBJ(const string& filePATH, int& nVertices, string& mtlFile)
 {
     vector<vec3>    positions;
-    vector<vec2>    texCoords;   // lidos mas não inseridos no buffer neste modo
-    vector<vec3>    normals;     // lidos mas não inseridos no buffer neste modo
+    vector<vec2>    texCoords;
+    vector<vec3>    normals;
     vector<GLfloat> vBuffer;
 
-    const vec3 placeholderColor(1.0f, 1.0f, 1.0f); // branco; cor real vem do uniform
+    mtlFile = "";
 
     ifstream arq(filePATH.c_str());
     if (!arq.is_open())
@@ -408,7 +448,11 @@ int loadSimpleOBJ(const string& filePATH, int& nVertices)
         string word;
         ss >> word;
 
-        if (word == "v")
+        if (word == "mtllib")
+        {
+            ss >> mtlFile;
+        }
+        else if (word == "v")
         {
             vec3 v;
             ss >> v.x >> v.y >> v.z;
@@ -428,7 +472,6 @@ int loadSimpleOBJ(const string& filePATH, int& nVertices)
         }
         else if (word == "f")
         {
-            // Suporte a faces triangulares: v/vt/vn  v//vn  v/vt  v
             while (ss >> word)
             {
                 int vi = 0, ti = 0, ni = 0;
@@ -442,9 +485,19 @@ int loadSimpleOBJ(const string& filePATH, int& nVertices)
                 vBuffer.push_back(positions[vi].x);
                 vBuffer.push_back(positions[vi].y);
                 vBuffer.push_back(positions[vi].z);
-                vBuffer.push_back(placeholderColor.r);
-                vBuffer.push_back(placeholderColor.g);
-                vBuffer.push_back(placeholderColor.b);
+
+                if (!normals.empty())
+                {
+                    vBuffer.push_back(normals[ni].x);
+                    vBuffer.push_back(normals[ni].y);
+                    vBuffer.push_back(normals[ni].z);
+                }
+                else
+                {
+                    vBuffer.push_back(0.0f);
+                    vBuffer.push_back(1.0f);
+                    vBuffer.push_back(0.0f);
+                }
             }
         }
     }
@@ -467,31 +520,86 @@ int loadSimpleOBJ(const string& filePATH, int& nVertices)
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(GLfloat), (GLvoid*)0);
     glEnableVertexAttribArray(0);
 
-    // Atributo 1: cor placeholder (3 floats, offset 3)
+    // Atributo 1: normal (3 floats, offset 3)
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(GLfloat), (GLvoid*)(3 * sizeof(GLfloat)));
     glEnableVertexAttribArray(1);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 
-    // pos(3) + cor(3) = 6 floats por vértice
     nVertices = (int)(vBuffer.size() / 6);
     return (int)VAO;
 }
 
 // ===========================================================================
+// loadMTL
+//
+// Lê coeficientes de iluminação Ka, Kd, Ks e Ns do arquivo .MTL.
+// Retorna um Material com defaults caso as linhas não sejam encontradas.
+// ===========================================================================
+Material loadMTL(const string& mtlPath)
+{
+    Material mat;
+
+    ifstream file(mtlPath.c_str());
+    if (!file.is_open())
+    {
+        cerr << "Erro ao abrir MTL: " << mtlPath << endl;
+        return mat;
+    }
+
+    string line;
+    while (getline(file, line))
+    {
+        istringstream ss(line);
+        string key;
+        ss >> key;
+
+        if (key == "Ka")
+        {
+            float r, g, b;
+            ss >> r >> g >> b;
+            mat.ka = (r + g + b) / 3.0f;
+        }
+        else if (key == "Kd")
+        {
+            float r, g, b;
+            ss >> r >> g >> b;
+            mat.kd = (r + g + b) / 3.0f;
+        }
+        else if (key == "Ks")
+        {
+            float r, g, b;
+            ss >> r >> g >> b;
+            mat.ks = (r + g + b) / 3.0f;
+        }
+        else if (key == "Ns")
+        {
+            ss >> mat.q;
+        }
+    }
+
+    file.close();
+    cout << "MTL carregado: " << mtlPath
+         << "  ka=" << mat.ka << "  kd=" << mat.kd
+         << "  ks=" << mat.ks << "  q="  << mat.q << endl;
+    return mat;
+}
+
+// ===========================================================================
 // drawObject
-// Constrói a matriz de modelo (T · Rx · Ry · Rz · S), envia os uniforms
-// e executa o drawcall.
 // ===========================================================================
 void drawObject(GLuint shaderID, const OBJModel& obj, bool selected)
 {
-    // Cor: laranja para selecionado, azul-aço para os demais
     vec3 color = selected ? vec3(1.0f, 0.55f, 0.0f)
                           : vec3(0.35f, 0.55f, 0.85f);
     glUniform3f(glGetUniformLocation(shaderID, "modelColor"), color.r, color.g, color.b);
 
-    // Matriz de modelo: Translate · RotX · RotY · RotZ · Scale
+    glUniform1f(glGetUniformLocation(shaderID, "ka"), obj.mat.ka);
+    glUniform1f(glGetUniformLocation(shaderID, "kd"), obj.mat.kd);
+    glUniform1f(glGetUniformLocation(shaderID, "ks"), obj.mat.ks);
+    glUniform1f(glGetUniformLocation(shaderID, "q"),  obj.mat.q);
+
     mat4 model = mat4(1.0f);
     model = translate(model, obj.position);
     model = rotate(model, obj.rotation.x, vec3(1.0f, 0.0f, 0.0f));
@@ -507,7 +615,7 @@ void drawObject(GLuint shaderID, const OBJModel& obj, bool selected)
 }
 
 // ===========================================================================
-// printStatus — exibe no console o estado atual
+// printStatus
 // ===========================================================================
 void printStatus()
 {
