@@ -5,13 +5,16 @@
  * Funcionalidades:
  *   - Leitura de arquivos .OBJ (geometria: vértices + normais parseados)
  *   - Leitura de arquivo .MTL (coeficientes Ka, Kd, Ks, Ns para iluminação de Phong)
- *   - Iluminação de Phong por fragmento (ambiente + difusa + especular)
+ *   - Iluminação de Phong por fragmento com 3 luzes pontuais (key, fill, back)
+ *   - Atenuação na componente difusa de cada luz
+ *   - Posicionamento automático das luzes a partir do objeto principal da cena
  *   - Exibição de múltiplos objetos na cena
  *   - Seleção de objetos com TAB (cicla pela lista)
  *   - Transformações no objeto selecionado:
  *       R  → modo rotação   | X / Y / Z alterna o(s) eixo(s)
  *       T  → modo translação | W A D / Setas = XY | Q E = Z
  *       S  → modo escala    | UP ou = aumenta | DOWN ou - diminui
+ *   - 1 / 2 / 3 → liga/desliga key light / fill light / back light
  *   - ESC → fechar janela
  *
  * Objeto selecionado: laranja | Objetos não-selecionados: azul-aço
@@ -91,6 +94,8 @@ TransformMode    mode = TransformMode::ROTATE;
 
 bool rotX = false, rotY = true, rotZ = false;
 
+bool lightEnabled[3] = { true, true, true };  // key, fill, back
+
 // ---------------------------------------------------------------------------
 // Protótipos
 // ---------------------------------------------------------------------------
@@ -98,6 +103,7 @@ void     key_callback(GLFWwindow* window, int key, int scancode, int action, int
 int      setupShader();
 int      loadSimpleOBJ(const string& filePATH, int& nVertices, string& mtlFile);
 Material loadMTL(const string& mtlPath);
+void     updateLights(GLuint shaderID);
 void     drawObject(GLuint shaderID, const OBJModel& obj, bool selected);
 void     printStatus();
 
@@ -126,7 +132,7 @@ void main()
 )";
 
 // ---------------------------------------------------------------------------
-// Fragment Shader — Phong (ambiente + difusa + especular)
+// Fragment Shader — Phong com 3 luzes pontuais e atenuação na difusa
 // ---------------------------------------------------------------------------
 const GLchar* fragmentShaderSource = R"(
 #version 400
@@ -134,32 +140,44 @@ in vec3 vNormal;
 in vec3 fragPos;
 
 uniform vec3  modelColor;
-uniform vec3  lightPos;
 uniform vec3  camPos;
 uniform float ka;
 uniform float kd;
 uniform float ks;
 uniform float q;
 
+uniform vec3  lightPos[3];
+uniform vec3  lightColor[3];
+uniform int   lightOn[3];
+
 out vec4 color;
 
 void main()
 {
-    vec3 lightColor = vec3(1.0, 1.0, 1.0);
+    vec3 N = normalize(vNormal);
+    vec3 V = normalize(camPos - fragPos);
 
-    vec3 ambient = ka * modelColor;
+    vec3 result = ka * modelColor;
 
-    vec3  N    = normalize(vNormal);
-    vec3  L    = normalize(lightPos - fragPos);
-    float diff = max(dot(N, L), 0.0);
-    vec3  diffuse = kd * diff * modelColor;
+    for (int i = 0; i < 3; i++)
+    {
+        if (lightOn[i] == 0) continue;
 
-    vec3  R    = normalize(reflect(-L, N));
-    vec3  V    = normalize(camPos - fragPos);
-    float spec = pow(max(dot(R, V), 0.0), q);
-    vec3  specular = ks * spec * lightColor;
+        vec3  L    = normalize(lightPos[i] - fragPos);
+        float dist = length(lightPos[i] - fragPos);
+        float att  = 1.0 / (1.0 + 0.09 * dist + 0.032 * dist * dist);
 
-    color = vec4(ambient + diffuse + specular, 1.0);
+        float diff    = max(dot(N, L), 0.0);
+        vec3  diffuse = kd * diff * att * lightColor[i] * modelColor;
+
+        vec3  R    = normalize(reflect(-L, N));
+        float spec = pow(max(dot(R, V), 0.0), q);
+        vec3  specular = ks * spec * lightColor[i];
+
+        result += diffuse + specular;
+    }
+
+    color = vec4(result, 1.0);
 }
 )";
 
@@ -228,10 +246,10 @@ int main()
     mat4 projection = perspective(radians(50.0f), (float)WIDTH / HEIGHT, 0.1f, 100.0f);
     glUniformMatrix4fv(glGetUniformLocation(shaderID, "projection"), 1, GL_FALSE, value_ptr(projection));
 
-    vec3 lightPos = vec3(2.0f, 4.0f, 2.0f);
-    vec3 camPos   = vec3(0.0f, 0.0f, 0.0f);
-    glUniform3f(glGetUniformLocation(shaderID, "lightPos"), lightPos.x, lightPos.y, lightPos.z);
-    glUniform3f(glGetUniformLocation(shaderID, "camPos"),   camPos.x,   camPos.y,   camPos.z);
+    vec3 camPos = vec3(0.0f, 0.0f, 0.0f);
+    glUniform3f(glGetUniformLocation(shaderID, "camPos"), camPos.x, camPos.y, camPos.z);
+
+    updateLights(shaderID);
 
     glEnable(GL_DEPTH_TEST);
 
@@ -241,6 +259,7 @@ int main()
     cout << "  R        : modo ROTACAO  | X / Y / Z: alternar eixo\n";
     cout << "  T        : modo TRANSLACAO | W/A/D ou Setas (XY) | Q/E (Z)\n";
     cout << "  S        : modo ESCALA   | UP ou = : aumenta | DOWN ou - : diminui\n";
+    cout << "  1 / 2 / 3: ligar/desligar key / fill / back light\n";
     cout << "  ESC      : fechar\n";
     cout << "=====================================================\n\n";
     printStatus();
@@ -303,6 +322,7 @@ int main()
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glUseProgram(shaderID);
+        updateLights(shaderID);
 
         for (int i = 0; i < (int)objects.size(); ++i)
             drawObject(shaderID, objects[i], i == selectedObj);
@@ -344,6 +364,10 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
              << " (indice " << selectedObj << ")\n";
         return;
     }
+
+    if (key == GLFW_KEY_1) { lightEnabled[0] = !lightEnabled[0]; return; }
+    if (key == GLFW_KEY_2) { lightEnabled[1] = !lightEnabled[1]; return; }
+    if (key == GLFW_KEY_3) { lightEnabled[2] = !lightEnabled[2]; return; }
 
     if (key == GLFW_KEY_R)
     {
@@ -584,6 +608,41 @@ Material loadMTL(const string& mtlPath)
          << "  ka=" << mat.ka << "  kd=" << mat.kd
          << "  ks=" << mat.ks << "  q="  << mat.q << endl;
     return mat;
+}
+
+// ===========================================================================
+// updateLights
+//
+// Calcula as posições das 3 luzes em relação ao objeto principal (objects[0])
+// e envia os uniforms lightPos, lightColor e lightOn para o shader.
+// ===========================================================================
+void updateLights(GLuint shaderID)
+{
+    const OBJModel& main = objects[0];
+    float r = glm::max(glm::max(main.scale.x, main.scale.y), main.scale.z) * 4.0f;
+
+    vec3 positions[3] = {
+        main.position + vec3(-r,  r * 0.8f,  r),
+        main.position + vec3( r,  r * 0.4f,  r),
+        main.position + vec3( 0,  r * 0.5f, -r * 1.5f)
+    };
+
+    vec3 colors[3] = {
+        vec3(1.0f,  1.0f,  0.95f),
+        vec3(0.5f,  0.55f, 0.6f),
+        vec3(0.6f,  0.6f,  0.65f)
+    };
+
+    for (int i = 0; i < 3; i++)
+    {
+        string posName = "lightPos[" + to_string(i) + "]";
+        string colName = "lightColor[" + to_string(i) + "]";
+        string onName  = "lightOn[" + to_string(i) + "]";
+
+        glUniform3fv(glGetUniformLocation(shaderID, posName.c_str()), 1, value_ptr(positions[i]));
+        glUniform3fv(glGetUniformLocation(shaderID, colName.c_str()), 1, value_ptr(colors[i]));
+        glUniform1i (glGetUniformLocation(shaderID, onName.c_str()),  lightEnabled[i] ? 1 : 0);
+    }
 }
 
 // ===========================================================================
