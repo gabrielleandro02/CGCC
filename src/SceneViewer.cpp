@@ -1,8 +1,9 @@
 /* SceneViewer - Visualizador interativo de múltiplos modelos 3D
  *
- * Atividade Vivencial - Módulo 4 | Computação Gráfica - Unisinos
+ * Atividade Vivencial - Módulo 5 | Computação Gráfica - Unisinos
  *
  * Funcionalidades:
+ *   - Câmera em primeira pessoa (classe Camera: mover e rotacionar)
  *   - Leitura de arquivos .OBJ (geometria: vértices + normais parseados)
  *   - Leitura de arquivo .MTL (coeficientes Ka, Kd, Ks, Ns para iluminação de Phong)
  *   - Iluminação de Phong por fragmento com 3 luzes pontuais (key, fill, back)
@@ -12,9 +13,10 @@
  *   - Seleção de objetos com TAB (cicla pela lista)
  *   - Transformações no objeto selecionado:
  *       R  → modo rotação   | X / Y / Z alterna o(s) eixo(s)
- *       T  → modo translação | W A D / Setas = XY | Q E = Z
+ *       T  → modo translação | Setas = XY | Q E = Z
  *       S  → modo escala    | UP ou = aumenta | DOWN ou - diminui
- *   - 1 / 2 / 3 → liga/desliga key light / fill light / back light
+ *   - W/A/S/D   → mover câmera | Mouse → rotacionar câmera
+ *   - 1 / 2 / 3 → liga/desliga key / fill / back light
  *   - ESC → fechar janela
  *
  * Objeto selecionado: laranja | Objetos não-selecionados: azul-aço
@@ -86,6 +88,68 @@ struct OBJModel
 enum class TransformMode { ROTATE, TRANSLATE, SCALE };
 
 // ---------------------------------------------------------------------------
+// Câmera em primeira pessoa
+// ---------------------------------------------------------------------------
+enum CameraDirection { FORWARD, BACKWARD, LEFT, RIGHT };
+
+class Camera
+{
+public:
+    vec3  position;
+    vec3  front;
+    vec3  up;
+    vec3  right;
+    vec3  worldUp;
+    float yaw;
+    float pitch;
+    float speed;
+    float sensitivity;
+
+    Camera(vec3 pos = vec3(0.0f, 0.0f, 3.0f),
+           float yaw = -90.0f, float pitch = 0.0f)
+        : position(pos), worldUp(vec3(0.0f, 1.0f, 0.0f)),
+          yaw(yaw), pitch(pitch), speed(5.0f), sensitivity(0.05f)
+    {
+        updateVectors();
+    }
+
+    mat4 getViewMatrix() const
+    {
+        return lookAt(position, position + front, up);
+    }
+
+    void processKeyboard(CameraDirection dir, float dt)
+    {
+        float v = speed * dt;
+        if (dir == FORWARD)  position += front * v;
+        if (dir == BACKWARD) position -= front * v;
+        if (dir == LEFT)     position -= right * v;
+        if (dir == RIGHT)    position += right * v;
+    }
+
+    void processMouseMovement(float dx, float dy)
+    {
+        yaw   += dx * sensitivity;
+        pitch += dy * sensitivity;
+        if (pitch >  89.0f) pitch =  89.0f;
+        if (pitch < -89.0f) pitch = -89.0f;
+        updateVectors();
+    }
+
+private:
+    void updateVectors()
+    {
+        vec3 f;
+        f.x   = cos(radians(yaw)) * cos(radians(pitch));
+        f.y   = sin(radians(pitch));
+        f.z   = sin(radians(yaw)) * cos(radians(pitch));
+        front = normalize(f);
+        right = normalize(cross(front, worldUp));
+        up    = normalize(cross(right, front));
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Estado global
 // ---------------------------------------------------------------------------
 vector<OBJModel> objects;
@@ -94,12 +158,18 @@ TransformMode    mode = TransformMode::ROTATE;
 
 bool rotX = false, rotY = true, rotZ = false;
 
-bool lightEnabled[3] = { true, true, true };  // key, fill, back
+bool lightEnabled[3] = { true, true, true };
+
+Camera camera;
+float  lastX = WIDTH  / 2.0f;
+float  lastY = HEIGHT / 2.0f;
+bool   firstMouse = true;
 
 // ---------------------------------------------------------------------------
 // Protótipos
 // ---------------------------------------------------------------------------
 void     key_callback(GLFWwindow* window, int key, int scancode, int action, int mod);
+void     mouse_callback(GLFWwindow* window, double xpos, double ypos);
 int      setupShader();
 int      loadSimpleOBJ(const string& filePATH, int& nVertices, string& mtlFile);
 Material loadMTL(const string& mtlPath);
@@ -118,6 +188,7 @@ layout (location = 0) in vec3 position;
 layout (location = 1) in vec3 normal;
 
 uniform mat4 model;
+uniform mat4 view;
 uniform mat4 projection;
 
 out vec3 vNormal;
@@ -125,7 +196,7 @@ out vec3 fragPos;
 
 void main()
 {
-    gl_Position = projection * model * vec4(position, 1.0);
+    gl_Position = projection * view * model * vec4(position, 1.0);
     fragPos     = vec3(model * vec4(position, 1.0));
     vNormal     = mat3(transpose(inverse(model))) * normal;
 }
@@ -192,6 +263,8 @@ int main()
                                           "SceneViewer - Selecione e Transforme", nullptr, nullptr);
     glfwMakeContextCurrent(window);
     glfwSetKeyCallback(window, key_callback);
+    glfwSetCursorPosCallback(window, mouse_callback);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
     // ---- GLAD ----
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
@@ -227,7 +300,7 @@ int main()
         s1.VAO       = (GLuint)vao;
         s1.nVertices = nV;
         s1.mat       = mat;
-        s1.position  = vec3(-1.6f, 0.0f, -5.0f);
+        s1.position  = vec3(-1.6f, 0.0f, -3.0f);
         s1.name      = "Suzanne #1";
         objects.push_back(s1);
 
@@ -235,7 +308,7 @@ int main()
         s2.VAO       = (GLuint)vao;
         s2.nVertices = nV;
         s2.mat       = mat;
-        s2.position  = vec3( 1.6f, 0.0f, -5.0f);
+        s2.position  = vec3( 1.6f, 0.0f, -3.0f);
         s2.name      = "Suzanne #2";
         objects.push_back(s2);
     }
@@ -246,18 +319,17 @@ int main()
     mat4 projection = perspective(radians(50.0f), (float)WIDTH / HEIGHT, 0.1f, 100.0f);
     glUniformMatrix4fv(glGetUniformLocation(shaderID, "projection"), 1, GL_FALSE, value_ptr(projection));
 
-    vec3 camPos = vec3(0.0f, 0.0f, 0.0f);
-    glUniform3f(glGetUniformLocation(shaderID, "camPos"), camPos.x, camPos.y, camPos.z);
-
     updateLights(shaderID);
 
     glEnable(GL_DEPTH_TEST);
 
     // ---- Ajuda no console ----
     cout << "==================== SceneViewer ====================\n";
+    cout << "  W/A/S/D  : mover camera\n";
+    cout << "  Mouse    : rotacionar camera\n";
     cout << "  TAB      : selecionar proximo objeto\n";
     cout << "  R        : modo ROTACAO  | X / Y / Z: alternar eixo\n";
-    cout << "  T        : modo TRANSLACAO | W/A/D ou Setas (XY) | Q/E (Z)\n";
+    cout << "  T        : modo TRANSLACAO | Setas (XY) | Q/E (Z)\n";
     cout << "  S        : modo ESCALA   | UP ou = : aumenta | DOWN ou - : diminui\n";
     cout << "  1 / 2 / 3: ligar/desligar key / fill / back light\n";
     cout << "  ESC      : fechar\n";
@@ -276,6 +348,12 @@ int main()
 
         glfwPollEvents();
 
+        // ---------- Câmera — sempre ativo ----------
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) camera.processKeyboard(FORWARD,  dt);
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) camera.processKeyboard(BACKWARD, dt);
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) camera.processKeyboard(LEFT,     dt);
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) camera.processKeyboard(RIGHT,    dt);
+
         OBJModel& sel = objects[selectedObj];
 
         // ---------- Transformações contínuas (glfwGetKey) ----------
@@ -289,22 +367,12 @@ int main()
         else if (mode == TransformMode::TRANSLATE)
         {
             float s = TRANSLATE_SPEED * dt;
-            if (glfwGetKey(window, GLFW_KEY_D)     == GLFW_PRESS ||
-                glfwGetKey(window, GLFW_KEY_RIGHT)  == GLFW_PRESS)
-                sel.position.x += s;
-            if (glfwGetKey(window, GLFW_KEY_A)     == GLFW_PRESS ||
-                glfwGetKey(window, GLFW_KEY_LEFT)   == GLFW_PRESS)
-                sel.position.x -= s;
-            if (glfwGetKey(window, GLFW_KEY_W)     == GLFW_PRESS ||
-                glfwGetKey(window, GLFW_KEY_UP)     == GLFW_PRESS)
-                sel.position.y += s;
-            if (glfwGetKey(window, GLFW_KEY_S)     == GLFW_PRESS ||
-                glfwGetKey(window, GLFW_KEY_DOWN)   == GLFW_PRESS)
-                sel.position.y -= s;
-            if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
-                sel.position.z -= s;
-            if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
-                sel.position.z += s;
+            if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) sel.position.x += s;
+            if (glfwGetKey(window, GLFW_KEY_LEFT)  == GLFW_PRESS) sel.position.x -= s;
+            if (glfwGetKey(window, GLFW_KEY_UP)    == GLFW_PRESS) sel.position.y += s;
+            if (glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS) sel.position.y -= s;
+            if (glfwGetKey(window, GLFW_KEY_E)     == GLFW_PRESS) sel.position.z -= s;
+            if (glfwGetKey(window, GLFW_KEY_Q)     == GLFW_PRESS) sel.position.z += s;
         }
         else if (mode == TransformMode::SCALE)
         {
@@ -322,6 +390,12 @@ int main()
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glUseProgram(shaderID);
+
+        glUniformMatrix4fv(glGetUniformLocation(shaderID, "view"), 1, GL_FALSE,
+                           value_ptr(camera.getViewMatrix()));
+        glUniform3f(glGetUniformLocation(shaderID, "camPos"),
+                    camera.position.x, camera.position.y, camera.position.z);
+
         updateLights(shaderID);
 
         for (int i = 0; i < (int)objects.size(); ++i)
@@ -394,6 +468,26 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         if (key == GLFW_KEY_Y) { rotY = !rotY; printStatus(); }
         if (key == GLFW_KEY_Z) { rotZ = !rotZ; printStatus(); }
     }
+}
+
+// ===========================================================================
+// mouse_callback
+// ===========================================================================
+void mouse_callback(GLFWwindow* window, double xpos, double ypos)
+{
+    if (firstMouse)
+    {
+        lastX = (float)xpos;
+        lastY = (float)ypos;
+        firstMouse = false;
+    }
+
+    float dx =  (float)(xpos - lastX);
+    float dy = -(float)(ypos - lastY);
+    lastX = (float)xpos;
+    lastY = (float)ypos;
+
+    camera.processMouseMovement(dx, dy);
 }
 
 // ===========================================================================
