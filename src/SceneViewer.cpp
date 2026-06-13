@@ -1,6 +1,6 @@
 /* SceneViewer - Visualizador interativo de múltiplos modelos 3D
  *
- * Atividade Vivencial - Módulo 5 | Computação Gráfica - Unisinos
+ * Atividade Vivencial - Módulo 6 | Computação Gráfica - Unisinos
  *
  * Funcionalidades:
  *   - Câmera em primeira pessoa (classe Camera: mover e rotacionar)
@@ -17,6 +17,9 @@
  *       S  → modo escala    | UP ou = aumenta | DOWN ou - diminui
  *   - W/A/S/D   → mover câmera | Mouse → rotacionar câmera
  *   - 1 / 2 / 3 → liga/desliga key / fill / back light
+ *   - P         → adicionar waypoint na posição atual do objeto selecionado
+ *   - F         → ligar/desligar trajetória cíclica (mínimo 2 pontos)
+ *   - G         → limpar trajetória do objeto selecionado
  *   - ESC → fechar janela
  *
  * Objeto selecionado: laranja | Objetos não-selecionados: azul-aço
@@ -50,10 +53,11 @@ using namespace glm;
 const GLuint WIDTH  = 900;
 const GLuint HEIGHT = 700;
 
-const float TRANSLATE_SPEED = 2.0f;
-const float SCALE_SPEED     = 0.8f;
-const float ROTATE_SPEED    = 1.8f;
-const float SCALE_MIN       = 0.05f;
+const float TRANSLATE_SPEED   = 2.0f;
+const float SCALE_SPEED       = 0.8f;
+const float ROTATE_SPEED      = 1.8f;
+const float SCALE_MIN         = 0.05f;
+const float TRAJECTORY_SPEED  = 2.0f;
 
 // ---------------------------------------------------------------------------
 // Coeficientes de material lidos do .MTL
@@ -79,7 +83,11 @@ struct OBJModel
     vec3 scale    = vec3(1.0f);
     vec3 rotation = vec3(0.0f);
 
-    string name;
+    string       name;
+    vector<vec3> waypoints;
+    int          waypointIdx = 0;
+    float        waypointT   = 0.0f;
+    bool         following   = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -332,6 +340,9 @@ int main()
     cout << "  T        : modo TRANSLACAO | Setas (XY) | Q/E (Z)\n";
     cout << "  S        : modo ESCALA   | UP ou = : aumenta | DOWN ou - : diminui\n";
     cout << "  1 / 2 / 3: ligar/desligar key / fill / back light\n";
+    cout << "  P        : adicionar waypoint na posicao atual\n";
+    cout << "  F        : ligar/desligar trajetoria (min 2 pontos)\n";
+    cout << "  G        : limpar trajetoria\n";
     cout << "  ESC      : fechar\n";
     cout << "=====================================================\n\n";
     printStatus();
@@ -353,6 +364,30 @@ int main()
         if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) camera.processKeyboard(BACKWARD, dt);
         if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) camera.processKeyboard(LEFT,     dt);
         if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) camera.processKeyboard(RIGHT,    dt);
+
+        // ---------- Trajetórias cíclicas ----------
+        for (auto& obj : objects)
+        {
+            if (!obj.following || (int)obj.waypoints.size() < 2) continue;
+
+            int  nextIdx = (obj.waypointIdx + 1) % (int)obj.waypoints.size();
+            vec3 from    = obj.waypoints[obj.waypointIdx];
+            vec3 to      = obj.waypoints[nextIdx];
+            float dist   = length(to - from);
+
+            if (dist > 0.001f)
+                obj.waypointT += TRAJECTORY_SPEED * dt / dist;
+
+            if (obj.waypointT >= 1.0f)
+            {
+                obj.waypointT   = 0.0f;
+                obj.waypointIdx = nextIdx;
+                from = obj.waypoints[obj.waypointIdx];
+                to   = obj.waypoints[(obj.waypointIdx + 1) % (int)obj.waypoints.size()];
+            }
+
+            obj.position = mix(from, to, obj.waypointT);
+        }
 
         OBJModel& sel = objects[selectedObj];
 
@@ -459,6 +494,37 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     {
         mode = TransformMode::SCALE;
         printStatus();
+        return;
+    }
+
+    if (key == GLFW_KEY_P)
+    {
+        objects[selectedObj].waypoints.push_back(objects[selectedObj].position);
+        cout << "[Waypoint] " << objects[selectedObj].name
+             << "  total=" << objects[selectedObj].waypoints.size() << "\n";
+        return;
+    }
+    if (key == GLFW_KEY_F)
+    {
+        OBJModel& o = objects[selectedObj];
+        if ((int)o.waypoints.size() >= 2)
+        {
+            o.following   = !o.following;
+            o.waypointIdx = 0;
+            o.waypointT   = 0.0f;
+            cout << "[Trajetoria] " << o.name
+                 << (o.following ? " LIGADA\n" : " DESLIGADA\n");
+        }
+        return;
+    }
+    if (key == GLFW_KEY_G)
+    {
+        OBJModel& o = objects[selectedObj];
+        o.waypoints.clear();
+        o.following   = false;
+        o.waypointIdx = 0;
+        o.waypointT   = 0.0f;
+        cout << "[Trajetoria limpa] " << o.name << "\n";
         return;
     }
 
