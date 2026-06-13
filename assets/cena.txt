@@ -1,0 +1,13 @@
+# SceneViewer - Configuracao da Cena
+# Grau B | Computacao Grafica - Unisinos
+
+camera 0.0 0.0 3.0 -90.0 0.0
+
+# light  idx  px      py     pz     r     g     b     ligada(1/0)
+light 0  -4.0  4.0   4.0   1.0   1.0   0.95  1
+light 1   4.0  2.0   4.0   0.5   0.55  0.6   1
+light 2   0.0  2.5  -6.0   0.6   0.6   0.65  1
+
+# object  arquivo  px    py   pz    rx  ry  rz  sx  sy  sz  textura(opcional)
+object ../assets/Modelos3D/Suzanne.obj  -1.6  0.0  -3.0  0  0  0  1  1  1  ../assets/Modelos3D/Suzanne.png
+object ../assets/Modelos3D/Suzanne.obj   1.6  0.0  -3.0  0  0  0  1  1  1  ../assets/Modelos3D/Suzanne.png

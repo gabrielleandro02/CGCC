@@ -1,29 +1,25 @@
 /* SceneViewer - Visualizador interativo de múltiplos modelos 3D
  *
- * Atividade Vivencial - Módulo 6 | Computação Gráfica - Unisinos
+ * Grau B | Computação Gráfica - Unisinos
  *
  * Funcionalidades:
+ *   - Cena definida por arquivo de configuração (assets/cena.txt)
  *   - Câmera em primeira pessoa (classe Camera: mover e rotacionar)
- *   - Leitura de arquivos .OBJ (geometria: vértices + normais parseados)
- *   - Leitura de arquivo .MTL (coeficientes Ka, Kd, Ks, Ns para iluminação de Phong)
+ *   - Leitura de arquivos .OBJ (geometria: vértices + normais + UVs)
+ *   - Leitura de arquivo .MTL (coeficientes Ka, Kd, Ks, Ns para Phong)
+ *   - Mapeamento de textura por objeto (toggle com U)
  *   - Iluminação de Phong por fragmento com 3 luzes pontuais (key, fill, back)
  *   - Atenuação na componente difusa de cada luz
- *   - Posicionamento automático das luzes a partir do objeto principal da cena
- *   - Exibição de múltiplos objetos na cena
- *   - Seleção de objetos com TAB (cicla pela lista)
- *   - Transformações no objeto selecionado:
- *       R  → modo rotação   | X / Y / Z alterna o(s) eixo(s)
- *       T  → modo translação | Setas = XY | Q E = Z
- *       S  → modo escala    | UP ou = aumenta | DOWN ou - diminui
- *   - W/A/S/D   → mover câmera | Mouse → rotacionar câmera
- *   - 1 / 2 / 3 → liga/desliga key / fill / back light
- *   - P         → adicionar waypoint na posição atual do objeto selecionado
- *   - F         → ligar/desligar trajetória cíclica (mínimo 2 pontos)
- *   - G         → limpar trajetória do objeto selecionado
- *   - ESC → fechar janela
+ *   - Seleção de objetos com TAB
+ *   - Transformações: R (rotação X/Y/Z) | T (translação setas/Q/E) | S (escala)
+ *   - W/A/S/D + Mouse → câmera | 1/2/3 → luzes | P/F/G → trajetória Bézier
+ *   - U → alternar textura / cor sólida | ESC → fechar
  *
  * Objeto selecionado: laranja | Objetos não-selecionados: azul-aço
  */
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 #include <iostream>
 #include <fstream>
@@ -53,11 +49,11 @@ using namespace glm;
 const GLuint WIDTH  = 900;
 const GLuint HEIGHT = 700;
 
-const float TRANSLATE_SPEED   = 2.0f;
-const float SCALE_SPEED       = 0.8f;
-const float ROTATE_SPEED      = 1.8f;
-const float SCALE_MIN         = 0.05f;
-const float TRAJECTORY_SPEED  = 2.0f;
+const float TRANSLATE_SPEED  = 2.0f;
+const float SCALE_SPEED      = 0.8f;
+const float ROTATE_SPEED     = 1.8f;
+const float SCALE_MIN        = 0.05f;
+const float TRAJECTORY_SPEED = 2.0f;
 
 // ---------------------------------------------------------------------------
 // Coeficientes de material lidos do .MTL
@@ -78,6 +74,7 @@ struct OBJModel
     GLuint   VAO       = 0;
     int      nVertices = 0;
     Material mat;
+    GLuint   textureID = 0;
 
     vec3 position = vec3(0.0f);
     vec3 scale    = vec3(1.0f);
@@ -166,7 +163,19 @@ TransformMode    mode = TransformMode::ROTATE;
 
 bool rotX = false, rotY = true, rotZ = false;
 
+vec3 lightPositions[3] = {
+    vec3(-4.0f,  4.0f,  4.0f),
+    vec3( 4.0f,  2.0f,  4.0f),
+    vec3( 0.0f,  2.5f, -6.0f)
+};
+vec3 lightColors[3] = {
+    vec3(1.0f,  1.0f,  0.95f),
+    vec3(0.5f,  0.55f, 0.6f),
+    vec3(0.6f,  0.6f,  0.65f)
+};
 bool lightEnabled[3] = { true, true, true };
+
+bool globalUseTexture = true;
 
 Camera camera;
 float  lastX = WIDTH  / 2.0f;
@@ -181,19 +190,23 @@ void     mouse_callback(GLFWwindow* window, double xpos, double ypos);
 int      setupShader();
 int      loadSimpleOBJ(const string& filePATH, int& nVertices, string& mtlFile);
 Material loadMTL(const string& mtlPath);
+GLuint   loadTexture(const string& path);
+void     loadScene(const string& path, GLuint shaderID);
 void     updateLights(GLuint shaderID);
 void     drawObject(GLuint shaderID, const OBJModel& obj, bool selected);
 void     printStatus();
 
 // ---------------------------------------------------------------------------
 // Vertex Shader
-//   location 0 — position (xyz)
-//   location 1 — normal   (xyz)
+//   location 0 — position  (xyz)
+//   location 1 — normal    (xyz)
+//   location 2 — texcoord  (uv)
 // ---------------------------------------------------------------------------
 const GLchar* vertexShaderSource = R"(
 #version 400
 layout (location = 0) in vec3 position;
 layout (location = 1) in vec3 normal;
+layout (location = 2) in vec2 texCoord;
 
 uniform mat4 model;
 uniform mat4 view;
@@ -201,22 +214,25 @@ uniform mat4 projection;
 
 out vec3 vNormal;
 out vec3 fragPos;
+out vec2 vTexCoord;
 
 void main()
 {
     gl_Position = projection * view * model * vec4(position, 1.0);
     fragPos     = vec3(model * vec4(position, 1.0));
     vNormal     = mat3(transpose(inverse(model))) * normal;
+    vTexCoord   = texCoord;
 }
 )";
 
 // ---------------------------------------------------------------------------
-// Fragment Shader — Phong com 3 luzes pontuais e atenuação na difusa
+// Fragment Shader — Phong com 3 luzes pontuais, atenuação e textura
 // ---------------------------------------------------------------------------
 const GLchar* fragmentShaderSource = R"(
 #version 400
 in vec3 vNormal;
 in vec3 fragPos;
+in vec2 vTexCoord;
 
 uniform vec3  modelColor;
 uniform vec3  camPos;
@@ -229,14 +245,19 @@ uniform vec3  lightPos[3];
 uniform vec3  lightColor[3];
 uniform int   lightOn[3];
 
+uniform sampler2D texSampler;
+uniform int       useTexture;
+
 out vec4 color;
 
 void main()
 {
+    vec3 baseColor = (useTexture == 1) ? texture(texSampler, vTexCoord).rgb : modelColor;
+
     vec3 N = normalize(vNormal);
     vec3 V = normalize(camPos - fragPos);
 
-    vec3 result = ka * modelColor;
+    vec3 result = ka * baseColor;
 
     for (int i = 0; i < 3; i++)
     {
@@ -247,7 +268,7 @@ void main()
         float att  = 1.0 / (1.0 + 0.09 * dist + 0.032 * dist * dist);
 
         float diff    = max(dot(N, L), 0.0);
-        vec3  diffuse = kd * diff * att * lightColor[i] * modelColor;
+        vec3  diffuse = kd * diff * att * lightColor[i] * baseColor;
 
         vec3  R    = normalize(reflect(-L, N));
         float spec = pow(max(dot(R, V), 0.0), q);
@@ -268,7 +289,7 @@ int main()
     // ---- GLFW ----
     glfwInit();
     GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT,
-                                          "SceneViewer - Selecione e Transforme", nullptr, nullptr);
+                                          "SceneViewer - Grau B", nullptr, nullptr);
     glfwMakeContextCurrent(window);
     glfwSetKeyCallback(window, key_callback);
     glfwSetCursorPosCallback(window, mouse_callback);
@@ -292,38 +313,19 @@ int main()
 
     // ---- Shaders ----
     GLuint shaderID = setupShader();
+    glUseProgram(shaderID);
 
-    // ---- Carregar modelos ----
+    // ---- Carregar cena ----
+    loadScene("../assets/cena.txt", shaderID);
+
+    if (objects.empty())
     {
-        int    nV = 0;
-        string mtlFileName;
-        int    vao = loadSimpleOBJ("../assets/Modelos3D/Suzanne.obj", nV, mtlFileName);
-        if (vao == -1) { glfwTerminate(); return -1; }
-
-        Material mat;
-        if (!mtlFileName.empty())
-            mat = loadMTL("../assets/Modelos3D/" + mtlFileName);
-
-        OBJModel s1;
-        s1.VAO       = (GLuint)vao;
-        s1.nVertices = nV;
-        s1.mat       = mat;
-        s1.position  = vec3(-1.6f, 0.0f, -3.0f);
-        s1.name      = "Suzanne #1";
-        objects.push_back(s1);
-
-        OBJModel s2;
-        s2.VAO       = (GLuint)vao;
-        s2.nVertices = nV;
-        s2.mat       = mat;
-        s2.position  = vec3( 1.6f, 0.0f, -3.0f);
-        s2.name      = "Suzanne #2";
-        objects.push_back(s2);
+        cerr << "Nenhum objeto carregado. Verifique assets/cena.txt." << endl;
+        glfwTerminate();
+        return -1;
     }
 
     // ---- Uniforms fixos ----
-    glUseProgram(shaderID);
-
     mat4 projection = perspective(radians(50.0f), (float)WIDTH / HEIGHT, 0.1f, 100.0f);
     glUniformMatrix4fv(glGetUniformLocation(shaderID, "projection"), 1, GL_FALSE, value_ptr(projection));
 
@@ -340,9 +342,10 @@ int main()
     cout << "  T        : modo TRANSLACAO | Setas (XY) | Q/E (Z)\n";
     cout << "  S        : modo ESCALA   | UP ou = : aumenta | DOWN ou - : diminui\n";
     cout << "  1 / 2 / 3: ligar/desligar key / fill / back light\n";
-    cout << "  P        : adicionar waypoint na posicao atual\n";
-    cout << "  F        : ligar/desligar trajetoria (min 2 pontos)\n";
+    cout << "  P        : adicionar ponto de controle Bezier\n";
+    cout << "  F        : ligar/desligar trajetoria (min 4 pontos)\n";
     cout << "  G        : limpar trajetoria\n";
+    cout << "  U        : alternar textura / cor solida\n";
     cout << "  ESC      : fechar\n";
     cout << "=====================================================\n\n";
     printStatus();
@@ -365,28 +368,31 @@ int main()
         if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) camera.processKeyboard(LEFT,     dt);
         if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) camera.processKeyboard(RIGHT,    dt);
 
-        // ---------- Trajetórias cíclicas ----------
+        // ---------- Trajetórias Bézier cúbico ----------
         for (auto& obj : objects)
         {
-            if (!obj.following || (int)obj.waypoints.size() < 2) continue;
+            if (!obj.following || (int)obj.waypoints.size() < 4) continue;
 
-            int  nextIdx = (obj.waypointIdx + 1) % (int)obj.waypoints.size();
-            vec3 from    = obj.waypoints[obj.waypointIdx];
-            vec3 to      = obj.waypoints[nextIdx];
-            float dist   = length(to - from);
+            int numSegs = ((int)obj.waypoints.size() - 1) / 3;
+            int base    = obj.waypointIdx * 3;
+            vec3 P0 = obj.waypoints[base];
+            vec3 P1 = obj.waypoints[base + 1];
+            vec3 P2 = obj.waypoints[base + 2];
+            vec3 P3 = obj.waypoints[base + 3];
 
+            float dist = length(P3 - P0);
             if (dist > 0.001f)
                 obj.waypointT += TRAJECTORY_SPEED * dt / dist;
 
             if (obj.waypointT >= 1.0f)
             {
                 obj.waypointT   = 0.0f;
-                obj.waypointIdx = nextIdx;
-                from = obj.waypoints[obj.waypointIdx];
-                to   = obj.waypoints[(obj.waypointIdx + 1) % (int)obj.waypoints.size()];
+                obj.waypointIdx = (obj.waypointIdx + 1) % numSegs;
             }
 
-            obj.position = mix(from, to, obj.waypointT);
+            float t = obj.waypointT;
+            float u = 1.0f - t;
+            obj.position = u*u*u*P0 + 3.0f*u*u*t*P1 + 3.0f*u*t*t*P2 + t*t*t*P3;
         }
 
         OBJModel& sel = objects[selectedObj];
@@ -448,6 +454,8 @@ int main()
             glDeleteVertexArrays(1, &obj.VAO);
             lastVAO = obj.VAO;
         }
+        if (obj.textureID != 0)
+            glDeleteTextures(1, &obj.textureID);
     }
     glfwTerminate();
     return 0;
@@ -478,6 +486,13 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     if (key == GLFW_KEY_2) { lightEnabled[1] = !lightEnabled[1]; return; }
     if (key == GLFW_KEY_3) { lightEnabled[2] = !lightEnabled[2]; return; }
 
+    if (key == GLFW_KEY_U)
+    {
+        globalUseTexture = !globalUseTexture;
+        cout << "[Textura] " << (globalUseTexture ? "ATIVA\n" : "DESATIVADA\n");
+        return;
+    }
+
     if (key == GLFW_KEY_R)
     {
         mode = TransformMode::ROTATE;
@@ -507,13 +522,17 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     if (key == GLFW_KEY_F)
     {
         OBJModel& o = objects[selectedObj];
-        if ((int)o.waypoints.size() >= 2)
+        if ((int)o.waypoints.size() >= 4)
         {
             o.following   = !o.following;
             o.waypointIdx = 0;
             o.waypointT   = 0.0f;
             cout << "[Trajetoria] " << o.name
                  << (o.following ? " LIGADA\n" : " DESLIGADA\n");
+        }
+        else
+        {
+            cout << "[Trajetoria] Necessario ao menos 4 pontos de controle\n";
         }
         return;
     }
@@ -603,9 +622,10 @@ int setupShader()
 // ===========================================================================
 // loadSimpleOBJ
 //
-// Layout do VBO: pos(3) + normal(3) = 6 floats por vértice
-//   location 0 — posição (xyz) @ offset 0
-//   location 1 — normal  (xyz) @ offset 3·sizeof(GLfloat)
+// Layout do VBO: pos(3) + normal(3) + texcoord(2) = 8 floats por vértice
+//   location 0 — posição  (xyz) @ offset 0
+//   location 1 — normal   (xyz) @ offset 3·sizeof(GLfloat)
+//   location 2 — texcoord (uv)  @ offset 6·sizeof(GLfloat)
 //
 // Retorna o identificador do VAO, ou -1 em caso de erro.
 // ===========================================================================
@@ -682,6 +702,17 @@ int loadSimpleOBJ(const string& filePATH, int& nVertices, string& mtlFile)
                     vBuffer.push_back(1.0f);
                     vBuffer.push_back(0.0f);
                 }
+
+                if (!texCoords.empty())
+                {
+                    vBuffer.push_back(texCoords[ti].s);
+                    vBuffer.push_back(texCoords[ti].t);
+                }
+                else
+                {
+                    vBuffer.push_back(0.0f);
+                    vBuffer.push_back(0.0f);
+                }
             }
         }
     }
@@ -701,17 +732,21 @@ int loadSimpleOBJ(const string& filePATH, int& nVertices, string& mtlFile)
     glBindVertexArray(VAO);
 
     // Atributo 0: posição (3 floats, offset 0)
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(GLfloat), (GLvoid*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(GLfloat), (GLvoid*)0);
     glEnableVertexAttribArray(0);
 
     // Atributo 1: normal (3 floats, offset 3)
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(GLfloat), (GLvoid*)(3 * sizeof(GLfloat)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(GLfloat), (GLvoid*)(3 * sizeof(GLfloat)));
     glEnableVertexAttribArray(1);
+
+    // Atributo 2: texcoord (2 floats, offset 6)
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(GLfloat), (GLvoid*)(6 * sizeof(GLfloat)));
+    glEnableVertexAttribArray(2);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 
-    nVertices = (int)(vBuffer.size() / 6);
+    nVertices = (int)(vBuffer.size() / 8);
     return (int)VAO;
 }
 
@@ -771,36 +806,138 @@ Material loadMTL(const string& mtlPath)
 }
 
 // ===========================================================================
-// updateLights
+// loadTexture
+// ===========================================================================
+GLuint loadTexture(const string& path)
+{
+    GLuint texID;
+    glGenTextures(1, &texID);
+    glBindTexture(GL_TEXTURE_2D, texID);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    int w, h, ch;
+    stbi_set_flip_vertically_on_load(true);
+    unsigned char* data = stbi_load(path.c_str(), &w, &h, &ch, 0);
+    if (data)
+    {
+        GLenum fmt = (ch == 4) ? GL_RGBA : GL_RGB;
+        glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, data);
+        cout << "Textura carregada: " << path
+             << "  " << w << "x" << h << "  ch=" << ch << endl;
+    }
+    else
+    {
+        cerr << "Erro ao carregar textura: " << path << endl;
+    }
+    stbi_image_free(data);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return texID;
+}
+
+// ===========================================================================
+// loadScene
 //
-// Calcula as posições das 3 luzes em relação ao objeto principal (objects[0])
-// e envia os uniforms lightPos, lightColor e lightOn para o shader.
+// Formato de cena.txt:
+//   camera px py pz yaw pitch
+//   light  i  px py pz  r g b  on
+//   object arquivo  px py pz  rx ry rz  sx sy sz  [textura]
+// ===========================================================================
+void loadScene(const string& path, GLuint shaderID)
+{
+    ifstream file(path.c_str());
+    if (!file.is_open())
+    {
+        cerr << "Erro ao abrir cena: " << path << endl;
+        return;
+    }
+
+    string line;
+    while (getline(file, line))
+    {
+        if (line.empty() || line[0] == '#') continue;
+
+        istringstream ss(line);
+        string token;
+        ss >> token;
+
+        if (token == "camera")
+        {
+            float px, py, pz, yaw, pitch;
+            ss >> px >> py >> pz >> yaw >> pitch;
+            camera = Camera(vec3(px, py, pz), yaw, pitch);
+        }
+        else if (token == "light")
+        {
+            int idx;
+            float px, py, pz, r, g, b;
+            int on;
+            ss >> idx >> px >> py >> pz >> r >> g >> b >> on;
+            if (idx >= 0 && idx < 3)
+            {
+                lightPositions[idx] = vec3(px, py, pz);
+                lightColors[idx]    = vec3(r, g, b);
+                lightEnabled[idx]   = (on != 0);
+            }
+        }
+        else if (token == "object")
+        {
+            string objPath;
+            float px, py, pz, rx, ry, rz, sx, sy, sz;
+            ss >> objPath >> px >> py >> pz >> rx >> ry >> rz >> sx >> sy >> sz;
+
+            string texPath;
+            ss >> texPath;
+
+            int    nV = 0;
+            string mtlFileName;
+            int    vao = loadSimpleOBJ(objPath, nV, mtlFileName);
+            if (vao == -1) continue;
+
+            Material mat;
+            if (!mtlFileName.empty())
+            {
+                string dir = objPath.substr(0, objPath.find_last_of("/\\") + 1);
+                mat = loadMTL(dir + mtlFileName);
+            }
+
+            OBJModel obj;
+            obj.VAO       = (GLuint)vao;
+            obj.nVertices = nV;
+            obj.mat       = mat;
+            obj.position  = vec3(px, py, pz);
+            obj.rotation  = vec3(rx, ry, rz);
+            obj.scale     = vec3(sx, sy, sz);
+
+            string base = objPath.substr(objPath.find_last_of("/\\") + 1);
+            obj.name = base.substr(0, base.find_last_of('.'));
+
+            if (!texPath.empty())
+                obj.textureID = loadTexture(texPath);
+
+            objects.push_back(obj);
+        }
+    }
+
+    file.close();
+    cout << "Cena carregada: " << objects.size() << " objeto(s)\n\n";
+}
+
+// ===========================================================================
+// updateLights
 // ===========================================================================
 void updateLights(GLuint shaderID)
 {
-    const OBJModel& main = objects[0];
-    float r = glm::max(glm::max(main.scale.x, main.scale.y), main.scale.z) * 4.0f;
-
-    vec3 positions[3] = {
-        main.position + vec3(-r,  r * 0.8f,  r),
-        main.position + vec3( r,  r * 0.4f,  r),
-        main.position + vec3( 0,  r * 0.5f, -r * 1.5f)
-    };
-
-    vec3 colors[3] = {
-        vec3(1.0f,  1.0f,  0.95f),
-        vec3(0.5f,  0.55f, 0.6f),
-        vec3(0.6f,  0.6f,  0.65f)
-    };
-
     for (int i = 0; i < 3; i++)
     {
         string posName = "lightPos[" + to_string(i) + "]";
         string colName = "lightColor[" + to_string(i) + "]";
         string onName  = "lightOn[" + to_string(i) + "]";
 
-        glUniform3fv(glGetUniformLocation(shaderID, posName.c_str()), 1, value_ptr(positions[i]));
-        glUniform3fv(glGetUniformLocation(shaderID, colName.c_str()), 1, value_ptr(colors[i]));
+        glUniform3fv(glGetUniformLocation(shaderID, posName.c_str()), 1, value_ptr(lightPositions[i]));
+        glUniform3fv(glGetUniformLocation(shaderID, colName.c_str()), 1, value_ptr(lightColors[i]));
         glUniform1i (glGetUniformLocation(shaderID, onName.c_str()),  lightEnabled[i] ? 1 : 0);
     }
 }
@@ -818,6 +955,12 @@ void drawObject(GLuint shaderID, const OBJModel& obj, bool selected)
     glUniform1f(glGetUniformLocation(shaderID, "kd"), obj.mat.kd);
     glUniform1f(glGetUniformLocation(shaderID, "ks"), obj.mat.ks);
     glUniform1f(glGetUniformLocation(shaderID, "q"),  obj.mat.q);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, obj.textureID);
+    glUniform1i(glGetUniformLocation(shaderID, "texSampler"), 0);
+    glUniform1i(glGetUniformLocation(shaderID, "useTexture"),
+                (obj.textureID != 0 && globalUseTexture) ? 1 : 0);
 
     mat4 model = mat4(1.0f);
     model = translate(model, obj.position);
@@ -838,6 +981,8 @@ void drawObject(GLuint shaderID, const OBJModel& obj, bool selected)
 // ===========================================================================
 void printStatus()
 {
+    if (objects.empty()) return;
+
     const char* modeStr =
         mode == TransformMode::ROTATE    ? "ROTACAO" :
         mode == TransformMode::TRANSLATE ? "TRANSLACAO" : "ESCALA";
