@@ -64,6 +64,7 @@ struct Material
     float kd = 0.7f;
     float ks = 0.5f;
     float q  = 32.0f;
+    vec3  Kd = vec3(0.64f);
 };
 
 // ---------------------------------------------------------------------------
@@ -159,9 +160,9 @@ private:
 // ---------------------------------------------------------------------------
 vector<OBJModel> objects;
 int              selectedObj = 0;
-TransformMode    mode = TransformMode::ROTATE;
+TransformMode    mode = TransformMode::TRANSLATE;
 
-bool rotX = false, rotY = true, rotZ = false;
+bool rotX = false, rotY = false, rotZ = false;
 
 vec3 lightPositions[3] = {
     vec3(-4.0f,  4.0f,  4.0f),
@@ -284,7 +285,7 @@ void main()
 // ===========================================================================
 // MAIN
 // ===========================================================================
-int main()
+int main(int argc, char* argv[])
 {
     // ---- GLFW ----
     glfwInit();
@@ -316,7 +317,8 @@ int main()
     glUseProgram(shaderID);
 
     // ---- Carregar cena ----
-    loadScene("../assets/cena.txt", shaderID);
+    string sceneFile = (argc > 1) ? argv[1] : "../assets/cena.txt";
+    loadScene(sceneFile, shaderID);
 
     if (objects.empty())
     {
@@ -361,6 +363,21 @@ int main()
         lastTime = currentTime;
 
         glfwPollEvents();
+
+        // ---------- Título da janela com comandos ----------
+        if (!objects.empty())
+        {
+            const string& obj = objects[selectedObj].name;
+            string hint;
+            if (mode == TransformMode::TRANSLATE)
+                hint = "E:Avanca  Q:Recua  Setas:Lateral/Altura  |  TAB:Obj  R:Rotacao  S:Escala  P:Waypoint  F:Seguir  U:Textura";
+            else if (mode == TransformMode::ROTATE)
+                hint = "X/Y/Z:Eixo  Setas:Girar  |  TAB:Obj  T:Translacao  S:Escala  P:Waypoint  F:Seguir  U:Textura";
+            else
+                hint = "Setas/+-:Escalar  |  TAB:Obj  T:Translacao  R:Rotacao  P:Waypoint  F:Seguir  U:Textura";
+            string title = "SceneViewer | " + obj + " | " + hint;
+            glfwSetWindowTitle(window, title.c_str());
+        }
 
         // ---------- Câmera — sempre ativo ----------
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) camera.processKeyboard(FORWARD,  dt);
@@ -676,43 +693,45 @@ int loadSimpleOBJ(const string& filePATH, int& nVertices, string& mtlFile)
         }
         else if (word == "f")
         {
+            struct FV { int vi, ti, ni; };
+            vector<FV> face;
+
             while (ss >> word)
             {
-                int vi = 0, ti = 0, ni = 0;
+                FV fv = {0, 0, 0};
                 istringstream fs(word);
                 string idx;
+                if (getline(fs, idx, '/')) fv.vi = !idx.empty() ? stoi(idx) - 1 : 0;
+                if (getline(fs, idx, '/')) fv.ti = !idx.empty() ? stoi(idx) - 1 : 0;
+                if (getline(fs, idx))      fv.ni = !idx.empty() ? stoi(idx) - 1 : 0;
+                face.push_back(fv);
+            }
 
-                if (getline(fs, idx, '/')) vi = !idx.empty() ? stoi(idx) - 1 : 0;
-                if (getline(fs, idx, '/')) ti = !idx.empty() ? stoi(idx) - 1 : 0;
-                if (getline(fs, idx))      ni = !idx.empty() ? stoi(idx) - 1 : 0;
-
-                vBuffer.push_back(positions[vi].x);
-                vBuffer.push_back(positions[vi].y);
-                vBuffer.push_back(positions[vi].z);
-
+            auto pushFV = [&](const FV& fv)
+            {
+                vBuffer.push_back(positions[fv.vi].x);
+                vBuffer.push_back(positions[fv.vi].y);
+                vBuffer.push_back(positions[fv.vi].z);
                 if (!normals.empty())
                 {
-                    vBuffer.push_back(normals[ni].x);
-                    vBuffer.push_back(normals[ni].y);
-                    vBuffer.push_back(normals[ni].z);
+                    vBuffer.push_back(normals[fv.ni].x);
+                    vBuffer.push_back(normals[fv.ni].y);
+                    vBuffer.push_back(normals[fv.ni].z);
                 }
-                else
-                {
-                    vBuffer.push_back(0.0f);
-                    vBuffer.push_back(1.0f);
-                    vBuffer.push_back(0.0f);
-                }
-
+                else { vBuffer.push_back(0.0f); vBuffer.push_back(1.0f); vBuffer.push_back(0.0f); }
                 if (!texCoords.empty())
                 {
-                    vBuffer.push_back(texCoords[ti].s);
-                    vBuffer.push_back(texCoords[ti].t);
+                    vBuffer.push_back(texCoords[fv.ti].s);
+                    vBuffer.push_back(texCoords[fv.ti].t);
                 }
-                else
-                {
-                    vBuffer.push_back(0.0f);
-                    vBuffer.push_back(0.0f);
-                }
+                else { vBuffer.push_back(0.0f); vBuffer.push_back(0.0f); }
+            };
+
+            for (int i = 1; i + 1 < (int)face.size(); i++)
+            {
+                pushFV(face[0]);
+                pushFV(face[i]);
+                pushFV(face[i + 1]);
             }
         }
     }
@@ -784,7 +803,14 @@ Material loadMTL(const string& mtlPath)
         {
             float r, g, b;
             ss >> r >> g >> b;
-            mat.kd = (r + g + b) / 3.0f;
+            float sat    = max({r, g, b}) - min({r, g, b});
+            float curSat = max({mat.Kd.r, mat.Kd.g, mat.Kd.b})
+                         - min({mat.Kd.r, mat.Kd.g, mat.Kd.b});
+            if (sat >= curSat)
+            {
+                mat.kd = (r + g + b) / 3.0f;
+                mat.Kd = vec3(r, g, b);
+            }
         }
         else if (key == "Ks")
         {
@@ -947,8 +973,8 @@ void updateLights(GLuint shaderID)
 // ===========================================================================
 void drawObject(GLuint shaderID, const OBJModel& obj, bool selected)
 {
-    vec3 color = selected ? vec3(1.0f, 0.55f, 0.0f)
-                          : vec3(0.35f, 0.55f, 0.85f);
+    vec3 color = selected ? mix(obj.mat.Kd, vec3(1.0f), 0.25f)
+                          : obj.mat.Kd;
     glUniform3f(glGetUniformLocation(shaderID, "modelColor"), color.r, color.g, color.b);
 
     glUniform1f(glGetUniformLocation(shaderID, "ka"), obj.mat.ka);

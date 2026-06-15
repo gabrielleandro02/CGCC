@@ -1,0 +1,15 @@
+# SceneViewer - Cena Carro na Estrada
+# Grau B | Computacao Grafica - Unisinos
+
+camera 5.0 5.0 -4.0 -135.0 -25.0
+
+# light  idx  px      py     pz     r     g     b     ligada(1/0)
+light 0  -4.0  6.0   4.0   1.0   1.0   0.95  1
+light 1   4.0  4.0   4.0   0.5   0.55  0.6   1
+light 2   0.0  5.0  -6.0   0.6   0.6   0.65  1
+
+# object  arquivo                          px    py    pz     rx  ry  rz  sx    sy    sz    textura(opcional)
+object ../assets/Modelos3D/car2.obj         0.0   0.55 -8.0   0   3.14159   0   0.25  0.25  0.25  ../assets/Modelos3D/car_difuse.png
+object ../assets/Modelos3D/road.obj         0.0   0.0   0.0   0   0   0   1     1     1     ../assets/tex/Road007_2K-PNG_Color.png
+object ../assets/Modelos3D/cottage_obj.obj -5.0   0.0 -12.0   0   0   0   0.15  0.15  0.15  ../assets/Modelos3D/cottage_diffuse.png
+object ../assets/Modelos3D/watertank.obj   -4.0   0.0 -16.0   0   0   0   0.20  0.20  0.20  ../assets/Modelos3D/watertank_colour.png

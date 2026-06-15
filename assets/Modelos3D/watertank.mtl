@@ -1,0 +1,14 @@
+# Blender 5.1.2 MTL File: 'water tank.blend'
+# www.blender.org
+
+newmtl water_tank
+Ka 1.000000 1.000000 1.000000
+Kd 0.780000 0.710000 0.600000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd C:/Users/gl67348/Downloads/64-water-tank/water tank/texture water tank/colour.png
+map_Ns C:/Users/gl67348/Downloads/64-water-tank/water tank/texture water tank/roughness.png
+map_Bump -bm 1.500000 C:/Users/gl67348/Downloads/64-water-tank/water tank/texture water tank/normal.png
