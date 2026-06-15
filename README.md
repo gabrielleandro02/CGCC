@@ -115,3 +115,24 @@ assets/
 - Trajetória por curva de Bézier cúbica segmentada (piecewise)
 - Suporte a múltiplas cenas via argumento de linha de comando
 
+### Assets
+
+| Modelo | Origem | Processamento |
+|--------|--------|---------------|
+| Suzanne.obj | Mesh embutida no Blender | Exportado via File → Export → OBJ |
+| car2.obj | [Low-Poly Car — free3d.com](https://free3d.com/pt/3d-model/low-poly-car-904030.html) | Convertido de FBX para OBJ no Blender |
+| cottage_obj.obj | [Abandoned Cottage House — free3d.com](https://free3d.com/pt/3d-model/abandoned-cottage-house-825251.html) | Exportado como OBJ no Blender |
+| road.obj | [Road — free3d.com](https://free3d.com/pt/3d-model/road-47211.html) | Plano personalizado com UVs tiled criado manualmente |
+| watertank.obj | Fornecido nos materiais da disciplina | — |
+
+Texturas: arquivos acompanham os modelos originais acima.
+
+### Referências
+
+- [LearnOpenGL](https://learnopengl.com/) — tutoriais de shaders, iluminação Phong, câmera FPS, mapeamento de texturas
+- [GLM Documentation](https://glm.g-truc.net/) — biblioteca de matemática (vec3, mat4, lookAt, perspective)
+- [GLFW Documentation](https://www.glfw.org/docs/latest/) — criação de janela e input
+- [stb_image](https://github.com/nothings/stb) — carregamento de imagens PNG/JPG
+- [GLAD](https://glad.dav1d.de/) — loader de funções OpenGL
+- Slides e materiais da disciplina de Computação Gráfica — Unisinos (2025)
+
